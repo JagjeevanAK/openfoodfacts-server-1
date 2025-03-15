@@ -4,15 +4,11 @@ tasks:
   - init: make build
     command: make dev
 
-ports:
-  - port: 8000               # host: openfoodfacts.localhost
-    onOpen: open-preview     
-  - port: 443                # host: ssl-api.openfoodfacts.localhost
-    onOpen: open-preview     
+ports:   
   - port: 80                 # host: world.openfoodfacts.localhost
-    onOpen: open-preview
-  - port: 8080               # host: static.openfoodfacts.localhost
-    onOpen: open-preview
+    onOpen: open-browser
+    visibility: public
+
 
 # Set the custom DOMAIN for Gitpod only
 env:
@@ -21,7 +17,7 @@ env:
 vscode:
   extensions:
     - richterger.perl
-    - d9705996.perl-toolbox
+    # - d9705996.perl-toolbox
     - redhat.vscode-yaml
     - dbaeumer.vscode-eslint
     - stylelint.vscode-stylelint

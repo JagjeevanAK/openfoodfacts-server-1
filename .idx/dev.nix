@@ -8,4 +8,5 @@
         git
         gnugrep
       ];
+      services.docker.enable = true;
     }

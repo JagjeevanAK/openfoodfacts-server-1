@@ -1,13 +1,12 @@
-let
-  pkgs = import <nixpkgs> {};
-in
-pkgs.mkShell {
-  buildInputs = with pkgs;[
-    python3
-    nodejs
-    docker
-    gnumake
-    gnugrep
-    git
-  ];
-}
+    { pkgs, ... }:
+    {
+      packages = with pkgs; [
+        # Add your packages here, e.g.,
+        nodejs
+        python3
+        gnumake
+        docker
+        git
+        gnugrep
+      ];
+    }

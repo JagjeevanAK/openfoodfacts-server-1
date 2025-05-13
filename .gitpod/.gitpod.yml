@@ -6,13 +6,12 @@ image:
 
 # Define tasks to run on workspace startup
 tasks:
-  - name: Initialize workspace
-    init: |
-      # Create necessary folders and initialize backend
-      make create_folders
-      make init_backend
   - name: Start development environment
-    command: make dev
+    command: |
+      # Use Gitpod public URL as the HOST domain so frontend loads correctly
+      export PRODUCT_OPENER_DOMAIN=$(gp url 80 --public)
+      # Start dev environment with updated domain
+      make dev
 
 # Expose application port and open in preview
 ports:

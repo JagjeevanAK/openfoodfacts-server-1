@@ -51,6 +51,7 @@ BEGIN {
 		&init_taxonomies
 		&retrieve_tags_taxonomy
 		&init_languages
+		&load_knowledge_content
 
 		&canonicalize_tag2
 		&canonicalize_tag_link
@@ -101,8 +102,6 @@ BEGIN {
 		&display_taxonomy_tag_name
 		&display_taxonomy_tag_link
 		&get_taxonomy_tag_and_link_for_lang
-
-		&spellcheck_taxonomy_tag
 
 		&get_tag_image
 
@@ -168,6 +167,8 @@ BEGIN {
 
 		&cached_display_taxonomy_tag
 
+		&create_property_to_tag_mapping_table
+
 	);    # symbols to export on request
 	%EXPORT_TAGS = (all => [@EXPORT_OK]);
 }
@@ -198,7 +199,7 @@ use Encode;
 use GraphViz2;
 use JSON::MaybeXS;
 
-use Data::DeepAccess qw(deep_get deep_exists);
+use Data::DeepAccess qw(deep_get deep_exists deep_set);
 
 binmode STDERR, ":encoding(UTF-8)";
 
@@ -2268,8 +2269,19 @@ sub build_tags_taxonomy ($tagtype, $publish) {
 			my $only_duplicate_errors = !(first {%{$_}{type} ne "duplicate_synonym"} @taxonomy_errors);
 			# Disable die for the ingredients taxonomy that is merged with additives, minerals etc.
 			# Disable die for the packaging taxonomy as some legit material and shape might have same name
-			my $taxonomy_with_duplicate_tolerated
-				= (($tagtype eq "ingredients") or ($tagtype eq "packaging") or ($tagtype eq "inci_functions"));
+
+			# ignore errors for ingredients for beauty, pet food, products
+			# TODO: reenable when we have cleaned the ingredients taxonomy for beauty, pet food, products
+			my $taxonomy_with_duplicate_tolerated;
+			if ($options{product_type} eq "food") {
+				$taxonomy_with_duplicate_tolerated
+					= (($tagtype eq "packaging") or ($tagtype eq "inci_functions"));
+			}
+			else {
+				$taxonomy_with_duplicate_tolerated
+					= (($tagtype eq "ingredients") or ($tagtype eq "packaging") or ($tagtype eq "inci_functions"));
+			}
+
 			unless ($only_duplicate_errors and $taxonomy_with_duplicate_tolerated) {
 				store("$result_dir/$tagtype.errors.sto", {errors => \@taxonomy_errors});
 				die("Errors in the $tagtype taxonomy definition");
@@ -2584,8 +2596,6 @@ sub generate_tags_taxonomy_extract ($tagtype, $tags_ref, $options_ref, $lcs_ref)
 
 sub retrieve_tags_taxonomy ($tagtype, $die_if_taxonomy_cannot_be_loaded = 0) {
 
-	print STDERR "retrieve_tags_taxonomy - tagtype: $tagtype\n";
-
 	$taxonomy_fields{$tagtype} = $tagtype;
 	$tags_fields{$tagtype} = 1;
 
@@ -2745,7 +2755,7 @@ sub init_countries() {
 				}
 			}
 		}
-		else {
+		elsif ($country ne 'en:world') {
 			$log->warn("No language_codes:en for country $country") if $log->is_warn();
 		}
 	}
@@ -3909,129 +3919,6 @@ sub canonicalize_taxonomy_tag_weblink ($tagtype, $tag) {
 	return $matched_tagid;
 }
 
-sub generate_spellcheck_candidates ($tagid, $candidates_ref) {
-
-	# https://norvig.com/spell-correct.html
-	# "All edits that are one edit away from `word`."
-	# letters    = 'abcdefghijklmnopqrstuvwxyz'
-	# splits     = [(word[:i], word[i:])    for i in range(len(word) + 1)]
-	# deletes    = [L + R[1:]               for L, R in splits if R]
-	# transposes = [L + R[1] + R[0] + R[2:] for L, R in splits if len(R)>1]
-	# replaces   = [L + c + R[1:]           for L, R in splits if R for c in letters]
-	# inserts    = [L + c + R               for L, R in splits for c in letters]
-
-	my $l = length($tagid);
-
-	for (my $i = 0; $i <= $l; $i++) {
-
-		my $left = substr($tagid, 0, $i);
-		my $right = substr($tagid, $i);
-
-		# delete
-		if ($i < $l) {
-			push @{$candidates_ref}, $left . substr($right, 1);
-		}
-
-		foreach my $c ("a" .. "z") {
-
-			# insert
-			push @{$candidates_ref}, $left . $c . $right;
-
-			# replace
-			if ($i < $l) {
-				push @{$candidates_ref}, $left . $c . substr($right, 1);
-			}
-		}
-
-		if (($i > 0) and ($i < $l)) {
-			push @{$candidates_ref}, $left . "-" . $right;
-			if ($i < ($l - 1)) {
-				push @{$candidates_ref}, $left . "-" . substr($right, 1);
-			}
-		}
-	}
-
-	return;
-}
-
-sub spellcheck_taxonomy_tag ($tag_lc, $tagtype, $tag) {
-	#$tag = lc($tag);
-	$tag =~ s/^ //g;
-	$tag =~ s/ $//g;
-
-	if ($tag =~ /^(\w\w):/) {
-		$tag_lc = $1;
-		$tag = $';
-	}
-
-	$tag = normalize_percentages($tag, $tag_lc);
-
-	my @candidates = ($tag);
-
-	if (length($tag) > 6) {
-		generate_spellcheck_candidates($tag, \@candidates);
-	}
-
-	my $result;
-	my $resultid;
-	my $canon_resultid;
-	my $correction;
-	my $last_candidate;
-
-	if ((exists $synonyms{$tagtype}) and (exists $synonyms{$tagtype}{$tag_lc})) {
-
-		foreach my $candidate (@candidates) {
-
-			$last_candidate = $candidate;
-			my $tagid = get_string_id_for_lang($tag_lc, $candidate);
-
-			if (exists $synonyms{$tagtype}{$tag_lc}{$tagid}) {
-				$result = $synonyms{$tagtype}{$tag_lc}{$tagid};
-				last;
-			}
-			else {
-				# try removing stopwords and plurals
-				# my $tagid2 = remove_stopwords($tagtype,$tag_lc,$tagid);
-				# $tagid2 = remove_plurals($tag_lc,$tagid2);
-				my $tagid2 = remove_plurals($tag_lc, $tagid);
-
-				# try to add / remove hyphens (e.g. antioxydant / anti-oxydant)
-				my $tagid3 = $tagid2;
-				my $tagid4 = $tagid2;
-				$tagid3 =~ s/(anti)(-| )/$1/;
-				$tagid4 =~ s/(anti)([a-z])/$1-$2/;
-
-				if (exists $synonyms{$tagtype}{$tag_lc}{$tagid2}) {
-					$result = $synonyms{$tagtype}{$tag_lc}{$tagid2};
-					last;
-				}
-				elsif (exists $synonyms{$tagtype}{$tag_lc}{$tagid3}) {
-					$result = $synonyms{$tagtype}{$tag_lc}{$tagid3};
-					last;
-				}
-				elsif (exists $synonyms{$tagtype}{$tag_lc}{$tagid4}) {
-					$result = $synonyms{$tagtype}{$tag_lc}{$tagid4};
-					last;
-				}
-			}
-		}
-	}
-
-	if (defined $result) {
-
-		$correction = $last_candidate;
-		my $tagid = $tag_lc . ':' . $result;
-		$resultid = $tagid;
-
-		if ((defined $translations_from{$tagtype}) and (defined $translations_from{$tagtype}{$tagid})) {
-			$canon_resultid = $translations_from{$tagtype}{$tagid};
-		}
-	}
-
-	return ($canon_resultid, $resultid, $correction);
-
-}
-
 =head2 get_taxonomy_tag_synonyms ( $tagtype )
 
 Return all entries in a taxonomy.
@@ -5141,6 +5028,62 @@ sub cmp_taxonomy_tags_alphabetically ($tagtype, $target_lc, $a, $b) {
 		cmp($translations_to{$tagtype}{$b}{$target_lc} || $translations_to{$tagtype}{$b}{"xx"} || $b);
 }
 
+# To avoid doing file operations for each call to get_knowledge_content (e.g. for each ingredient of a product),
+# we load all knowledge content in memory at startup.
+
+my %knowledge_content = ();
+
+=head2 load_knowledge_content()
+
+Load all knowledge content in memory.
+The content is in /lang/[flavor]?/[lc]/knowledge_panels/[tagtype]/[tagid]_[cc|world].html
+
+=cut
+
+sub load_knowledge_content() {
+	# Parse the $lang_dir and $lang_dir/$flavor directories to load all knowledge content in memory
+	foreach my $dir ("$lang_dir", "$lang_dir/$flavor") {
+		if (opendir(my $DH, $dir)) {
+			foreach my $langid (sort readdir($DH)) {
+				next if $langid eq '.';
+				next if $langid eq '..';
+				next if (length($langid) ne 2);
+
+				my $target_lc = $langid;
+
+				if (-e "$dir/$langid/knowledge_panels") {
+					# read the directories
+					opendir my $DH2, "$dir/$langid/knowledge_panels" or die "Couldn't open the current directory: $!";
+					foreach my $tagtype (sort readdir($DH2)) {
+						next if $tagtype eq '.';
+						next if $tagtype eq '..';
+
+						opendir my $DH3, "$dir/$langid/knowledge_panels/$tagtype"
+							or die "Couldn't open the current directory: $!";
+						foreach my $file (readdir($DH3)) {
+							next if $file !~ /(.*)_(\w\w|world)\.html/;
+							my $tagid = $1;
+							my $target_cc = $2;
+							open(my $IN, "<:encoding(UTF-8)", "$dir/$langid/knowledge_panels/$tagtype/$file")
+								or $log->error("cannot open file",
+								{path => "$dir/$langid/knowledge_panels/$tagtype/$file", error => $!});
+
+							my $text = join("", (<$IN>));
+							deep_set(\%knowledge_content, $tagtype, $tagid, $target_lc, $target_cc, $text);
+							close $IN;
+						}
+						closedir($DH3);
+					}
+
+					closedir($DH2);
+				}
+			}
+			closedir($DH);
+		}
+	}
+	return;
+}
+
 =head2 get_knowledge_content ($tagtype, $tagid, $target_lc, $target_cc)
 
 Fetch knowledge content as HTML about additive, categories,...
@@ -5182,20 +5125,47 @@ sub get_knowledge_content ($tagtype, $tagid, $target_lc, $target_cc) {
 	# en:250 -> en_250
 	$tagid =~ s/:/_/g;
 
-	my $base_dir = "$lang_dir/$target_lc/knowledge_panels/$tagtype";
-
 	foreach my $cc ($target_cc, "world") {
-		my $file_path = "$base_dir/$tagid" . "_" . "$cc.html";
-		$log->debug("get_knowledge_content - checking $file_path") if $log->is_debug();
-		if (-e $file_path) {
-			$log->debug("get_knowledge_content - Match on $file_path!") if $log->is_debug();
-			open(my $IN, "<:encoding(UTF-8)", $file_path) or $log->error("cannot open file", {path => $file_path});
-			my $text = join("", (<$IN>));
-			close $IN;
-			return $text;
+		if (my $content = deep_get(\%knowledge_content, $tagtype, $tagid, $target_lc, $cc)) {
+			return $content;
 		}
 	}
 	return;
+}
+
+=head2 create_property_to_tag_mapping_table ($tagtype, $property)
+
+Given a tag type and a property name, create a mapping table from the property to the tag id.
+
+=head3 Arguments
+
+=head4 $tagtype
+
+The type of the tag (e.g. categories, labels, allergens)
+
+=head4 $property
+
+The property name (e.g. "gpc_category_code:en:")
+
+=head3 Return value
+
+A hash reference with the tag id as key and the property value as value.
+
+=cut
+
+sub create_property_to_tag_mapping_table ($tagtype, $property) {
+	my %mapping = ();
+
+	if (exists $properties{$tagtype}) {
+		foreach my $tagid (keys %{$properties{$tagtype}}) {
+			my $value = $properties{$tagtype}{$tagid}{$property};
+			if (defined $value) {
+				$mapping{$value} = $tagid;
+			}
+		}
+	}
+
+	return \%mapping;
 }
 
 # Init the taxonomies, as most modules / scripts that load Tags.pm expect the taxonomies to be loaded

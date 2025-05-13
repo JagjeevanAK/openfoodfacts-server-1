@@ -17,4 +17,4 @@ tasks:
 ports:
   - port: 80
     visibility: public
-    onOpen: open-preview
+    onOpen: open-browser
